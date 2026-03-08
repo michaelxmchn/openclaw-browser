@@ -2,6 +2,8 @@
 
 > 专为 OpenClaw 设计的浏览器，替代浏览器扩展，实现全平台自动化
 
+[English](README.md) | [中文](README.md) | [日本語](README_JA.md) | [한국어](README_KO.md)
+
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/michaelxmchn/openclaw-browser?style=flat)](https://github.com/michaelxmchn/openclaw-browser/stargazers)
 
@@ -20,8 +22,8 @@
 
 ## 🚧 开发进度
 
-- [ ] M1: Ubuntu 版本 MVP（基础浏览 + API）
-- [ ] M2: 完善自动化功能
+- [x] M1: Ubuntu 版本 MVP（基础浏览 + API）
+- [x] M2: 完善自动化功能
 - [ ] M3: iOS 版本
 - [ ] M4: Windows 版本
 
