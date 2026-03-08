@@ -3,11 +3,83 @@ const { v4: uuidv4 } = require('uuid');
 const express = require('express');
 const http = require('http');
 const fs = require('fs');
+const https = require('https');
+const { URL } = require('url');
 
 let apiServer = null;
 
 // 浏览器实例管理
 const browserInstances = new Map();
+
+// AI 模型配置（MiniMax）
+const AI_CONFIG = {
+  apiKey: process.env.MINIMAX_API_KEY || 'sk-cp-Fs86f3TW_cee6QhWU9WtYgvbhaPqn9-owTZKmePxYES-KO-sYM4Kla56Hc1GPYYw3UAyT1eZ7yUvdFeNRnb44WrML9wtQ9IU74T5WShvurT9i5fD5TfwNEg',
+  baseUrl: 'https://api.minimax.chat/v1'
+};
+
+// 调用 MiniMax 视觉模型分析滑块缺口
+async function analyzeSliderWithAI(imageBase64) {
+  return new Promise((resolve, reject) => {
+    const postData = JSON.stringify({
+      model: 'MiniMax-Vision-01',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: '这是一个滑块验证码图片。请找出缺口的位置。返回JSON格式：{"distance": 缺口距离(像素整数), "direction": "left"或"right"}。只返回JSON，不要其他内容。'
+            },
+            {
+              type: 'image_url',
+              image_url: {
+                url: `data:image/png;base64,${imageBase64}`
+              }
+            }
+          ]
+        }
+      ],
+      temperature: 0.3
+    });
+
+    const url = new URL('/v1/chat/completions', AI_CONFIG.baseUrl);
+    const options = {
+      hostname: url.hostname,
+      port: 443,
+      path: url.pathname,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${AI_CONFIG.apiKey}`
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          const result = JSON.parse(data);
+          const text = result.choices?.[0]?.message?.content || '';
+          // 提取JSON
+          const match = text.match(/\{[^}]+\}/);
+          if (match) {
+            const parsed = JSON.parse(match[0]);
+            resolve(parsed);
+          } else {
+            reject(new Error('无法解析AI返回结果'));
+          }
+        } catch (err) {
+          reject(err);
+        }
+      });
+    });
+
+    req.on('error', reject);
+    req.write(postData);
+    req.end();
+  });
+}
 
 // API 密钥管理
 const apiKeys = new Map();
@@ -992,6 +1064,80 @@ function startApiServer() {
       }
       
       res.json({ success: false, error: 'Timeout waiting for human verification' });
+    } catch (err) {
+      res.json({ success: false, error: err.message });
+    }
+  });
+
+  // AI 解决滑块验证（用视觉模型分析缺口）
+  expressApp.post('/api/browser/:id/slider-solve-ai', async (req, res) => {
+    const instance = browserInstances.get(req.params.id);
+    if (!instance) {
+      return res.json({ success: false, error: 'Browser instance not found' });
+    }
+    
+    try {
+      // 1. 截取滑块区域图片
+      const sliderImage = await instance.page.evaluate(() => {
+        // 尝试找到滑块背景图
+        const bg = document.querySelector('.geetest_item_bg, .gc__item, [class*="bg"]');
+        if (bg) {
+          return bg.toDataURL();
+        }
+        // 如果找不到，返回整个页面截图
+        return null;
+      });
+      
+      if (!sliderImage) {
+        // 尝试全屏截图
+        const screenshot = await instance.page.screenshot({ encoding: 'base64' });
+        
+        // 发送给 AI 分析
+        const result = await analyzeSliderWithAI(screenshot);
+        
+        return res.json({ 
+          success: true, 
+          method: 'ai-fullscreen',
+          distance: result.distance || 200,
+          direction: result.direction || 'right',
+          message: 'AI分析完成，请确认距离'
+        });
+      }
+      
+      // 发送给 AI 分析滑块缺口
+      const imageBase64 = sliderImage.replace('data:image/png;base64,', '');
+      const result = await analyzeSliderWithAI(imageBase64);
+      
+      const distance = result.distance || 200;
+      
+      // 2. 执行滑动
+      const slider = await instance.page.$('.nc_wrapper .ncslider, .slider, [class*="slider"], #nc_1_n1z');
+      if (slider) {
+        const sliderBox = await slider.boundingBox();
+        
+        // 使用AI返回的距离
+        const slideDistance = distance;
+        const moves = generateHumanSlidePath(slideDistance);
+        
+        await instance.page.mouse.move(sliderBox.x + sliderBox.width / 2, sliderBox.y + sliderBox.height / 2);
+        for (const move of moves) {
+          await instance.page.mouse.move(
+            sliderBox.x + sliderBox.width / 2 + move.x,
+            sliderBox.y + sliderBox.height / 2 + move.y,
+            { steps: 1 }
+          );
+          await instance.page.waitForTimeout(move.delay);
+        }
+        await instance.page.mouse.up();
+      }
+      
+      res.json({ 
+        success: true, 
+        method: 'ai',
+        distance: distance,
+        direction: result.direction,
+        message: 'AI滑块解决完成'
+      });
     } catch (err) {
       res.json({ success: false, error: err.message });
     }
