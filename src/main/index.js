@@ -681,6 +681,11 @@ function startApiServer() {
                     !!document.querySelector('input[name="mobile"]') ||
                     !!document.querySelector('input[type="tel"]'),
           
+          // 检测邮箱输入框
+          hasEmail: !!document.querySelector('input[type="email"]') ||
+                   !!document.querySelector('input[name="email"]') ||
+                   !!document.querySelector('input[name="mail"]'),
+          
           // 检测登录按钮
           hasLoginBtn: !!document.querySelector('button[type="submit"]') ||
                        !!document.querySelector('button:contains("登录")') ||
@@ -818,6 +823,30 @@ function startApiServer() {
       await instance.page.click(btnSel).catch(() => {});
       
       res.json({ success: true, message: 'Verification code submitted' });
+    } catch (err) {
+      res.json({ success: false, error: err.message });
+    }
+  });
+
+  // 输入邮箱并发送验证码
+  expressApp.post('/api/browser/:id/login-email', async (req, res) => {
+    const instance = browserInstances.get(req.params.id);
+    if (!instance) {
+      return res.json({ success: false, error: 'Browser instance not found' });
+    }
+    
+    const { email, emailSelector, sendBtnSelector } = req.body;
+    
+    try {
+      // 查找邮箱输入框
+      const sel = emailSelector || 'input[name="email"], input[type="email"], input[name="mail"]';
+      await instance.page.type(sel, email);
+      
+      // 点击发送验证码按钮
+      const btnSel = sendBtnSelector || 'button:contains("发送验证码"), button:contains("获取验证码"), button:contains("发送"), button[type="submit"]';
+      await instance.page.click(btnSel).catch(() => {});
+      
+      res.json({ success: true, message: 'Email entered, verification code sent' });
     } catch (err) {
       res.json({ success: false, error: err.message });
     }
