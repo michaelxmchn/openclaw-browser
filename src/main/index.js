@@ -155,6 +155,224 @@ async function handleBrowserFill(event, { id, selector, text }) {
   }
 }
 
+// ============ 反爬虫 - 人类模拟功能 ============
+
+// 随机延迟
+function randomDelay(min = 100, max = 500) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+// 模拟人类打字 - 逐字输入，带随机延迟
+async function handleBrowserHumanType(event, { id, selector, text, minDelay = 50, maxDelay = 150 }) {
+  const instance = browserInstances.get(id);
+  if (!instance) {
+    return { success: false, error: 'Browser instance not found' };
+  }
+  
+  try {
+    // 先清空输入框
+    await instance.window.webContents.executeJavaScript(`
+      (() => {
+        const el = document.querySelector('${selector}');
+        if (!el) throw new Error('Element not found');
+        el.value = '';
+        el.focus();
+      })()
+    `);
+    
+    // 逐字符输入
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i];
+      await instance.window.webContents.executeJavaScript(`
+        (() => {
+          const el = document.querySelector('${selector}');
+          el.value += '${char.replace(/'/g, "\\'")}';
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+        })()
+      `);
+      // 随机延迟模拟人类打字速度
+      await new Promise(resolve => setTimeout(resolve, randomDelay(minDelay, maxDelay)));
+    }
+    
+    // 触发 change 事件
+    await instance.window.webContents.executeJavaScript(`
+      (() => {
+        const el = document.querySelector('${selector}');
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      })()
+    `);
+    
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+// 模拟人类点击 - 带随机偏移和延迟
+async function handleBrowserHumanClick(event, { id, selector, offsetX = 0, offsetY = 0, minDelay = 100, maxDelay = 500 }) {
+  const instance = browserInstances.get(id);
+  if (!instance) {
+    return { success: false, error: 'Browser instance not found' };
+  }
+  
+  try {
+    // 随机延迟
+    await new Promise(resolve => setTimeout(resolve, randomDelay(minDelay, maxDelay)));
+    
+    // 计算随机偏移
+    const randomOffsetX = offsetX + Math.floor(Math.random() * 10 - 5);
+    const randomOffsetY = offsetY + Math.floor(Math.random() * 10 - 5);
+    
+    await instance.window.webContents.executeJavaScript(`
+      (() => {
+        const el = document.querySelector('${selector}');
+        if (!el) throw new Error('Element not found');
+        
+        // 创建鼠标事件
+        const rect = el.getBoundingClientRect();
+        const x = rect.left + rect.width / 2 + ${randomOffsetX};
+        const y = rect.top + rect.height / 2 + ${randomOffsetY};
+        
+        const mouseEvents = ['mouseover', 'mousedown', 'mouseup', 'click'];
+        mouseEvents.forEach(eventType => {
+          const event = new MouseEvent(eventType, {
+            view: window,
+            bubbles: true,
+            cancelable: true,
+            clientX: x,
+            clientY: y,
+            buttons: 1
+          });
+          el.dispatchEvent(event);
+        });
+      })()
+    `);
+    
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+// 模拟人类滚动 - 渐进式滚动，带随机停顿
+async function handleBrowserHumanScroll(event, { id, y, minStep = 100, maxStep = 300, minDelay = 200, maxDelay = 500 }) {
+  const instance = browserInstances.get(id);
+  if (!instance) {
+    return { success: false, error: 'Browser instance not found' };
+  }
+  
+  try {
+    const currentY = await instance.window.webContents.executeJavaScript('window.scrollY');
+    const targetY = Math.min(y, await instance.window.webContents.executeJavaScript('document.body.scrollHeight'));
+    
+    let scrollY = currentY;
+    while (scrollY < targetY) {
+      const step = randomDelay(minStep, maxStep);
+      scrollY = Math.min(scrollY + step, targetY);
+      
+      await instance.window.webContents.executeJavaScript(`window.scrollTo(0, ${scrollY})`);
+      
+      // 随机停顿
+      if (scrollY < targetY) {
+        await new Promise(resolve => setTimeout(resolve, randomDelay(minDelay, maxDelay)));
+      }
+    }
+    
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+// 随机等待
+async function handleBrowserRandomWait(event, { id, minMs = 1000, maxMs = 3000 }) {
+  const delay = randomDelay(minMs, maxMs);
+  await new Promise(resolve => setTimeout(resolve, delay));
+  return { success: true, waited: delay };
+}
+
+// 模拟鼠标移动轨迹
+async function handleBrowserHumanMove(event, { id, selector, minDelay = 50, maxDelay = 150 }) {
+  const instance = browserInstances.get(id);
+  if (!instance) {
+    return { success: false, error: 'Browser instance not found' };
+  }
+  
+  try {
+    // 获取元素位置
+    const pos = await instance.window.webContents.executeJavaScript(`
+      (() => {
+        const el = document.querySelector('${selector}');
+        if (!el) return null;
+        const rect = el.getBoundingClientRect();
+        return {
+          x: rect.left + rect.width / 2,
+          y: rect.top + rect.height / 2
+        };
+      })()
+    `);
+    
+    if (!pos) {
+      return { success: false, error: 'Element not found' };
+    }
+    
+    // 模拟鼠标移动轨迹 - 从当前位置移动到目标位置
+    const steps = 5;
+    for (let i = 1; i <= steps; i++) {
+      const x = pos.x * (i / steps) + Math.random() * 20 - 10;
+      const y = pos.y * (i / steps) + Math.random() * 20 - 10;
+      
+      await instance.window.webContents.executeJavaScript(`
+        (() => {
+          const event = new MouseEvent('mousemove', {
+            view: window,
+            bubbles: true,
+            cancelable: true,
+            clientX: ${x},
+            clientY: ${y}
+          });
+          document.elementFromPoint(${x}, ${y})?.dispatchEvent(event);
+        })()
+      `);
+      
+      await new Promise(resolve => setTimeout(resolve, randomDelay(minDelay, maxDelay)));
+    }
+    
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+// 按键盘按键
+async function handleBrowserPressKey(event, { id, key, minDelay = 50, maxDelay = 150 }) {
+  const instance = browserInstances.get(id);
+  if (!instance) {
+    return { success: false, error: 'Browser instance not found' };
+  }
+  
+  try {
+    await new Promise(resolve => setTimeout(resolve, randomDelay(minDelay, maxDelay)));
+    
+    await instance.window.webContents.executeJavaScript(`
+      (() => {
+        const event = new KeyboardEvent('keydown', {
+          key: '${key}',
+          code: 'Key${key.toUpperCase()}',
+          keyCode: ${key === 'Enter' ? 13 : key === 'Escape' ? 27 : 0},
+          which: ${key === 'Enter' ? 13 : key === 'Escape' ? 27 : 0},
+          bubbles: true
+        });
+        document.activeElement?.dispatchEvent(event);
+      })()
+    `);
+    
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
 async function handleBrowserScreenshot(event, { id, path: savePath }) {
   const instance = browserInstances.get(id);
   if (!instance) {
@@ -501,6 +719,10 @@ function startApiServer() {
         'POST /api/browser/:id/cookie', 'GET /api/browser/:id/cookies',
         'POST /api/browser/:id/upload', 'POST /api/browser/:id/download',
         'POST /api/browser/:id/proxy', 'POST /api/browser/:id/select',
+        // 反爬虫功能
+        'POST /api/browser/:id/human-type', 'POST /api/browser/:id/human-click',
+        'POST /api/browser/:id/human-scroll', 'POST /api/browser/:id/wait-random',
+        'POST /api/browser/:id/human-move', 'POST /api/browser/:id/press-key',
         'DELETE /api/browser/:id'
       ]
     });
@@ -688,6 +910,56 @@ function startApiServer() {
     res.json(result);
   });
 
+  // ============ 反爬虫 API 端点 ============
+  
+  // 人类模拟打字
+  expressApp.post('/api/browser/:id/human-type', async (req, res) => {
+    const { id } = req.params;
+    const { selector, text, minDelay, maxDelay } = req.body;
+    const result = await handleBrowserHumanType(null, { id, selector, text, minDelay, maxDelay });
+    res.json(result);
+  });
+
+  // 人类模拟点击
+  expressApp.post('/api/browser/:id/human-click', async (req, res) => {
+    const { id } = req.params;
+    const { selector, offsetX, offsetY, minDelay, maxDelay } = req.body;
+    const result = await handleBrowserHumanClick(null, { id, selector, offsetX, offsetY, minDelay, maxDelay });
+    res.json(result);
+  });
+
+  // 人类模拟滚动
+  expressApp.post('/api/browser/:id/human-scroll', async (req, res) => {
+    const { id } = req.params;
+    const { y, minStep, maxStep, minDelay, maxDelay } = req.body;
+    const result = await handleBrowserHumanScroll(null, { id, y, minStep, maxStep, minDelay, maxDelay });
+    res.json(result);
+  });
+
+  // 随机等待
+  expressApp.post('/api/browser/:id/wait-random', async (req, res) => {
+    const { id } = req.params;
+    const { minMs, maxMs } = req.body;
+    const result = await handleBrowserRandomWait(null, { id, minMs, maxMs });
+    res.json(result);
+  });
+
+  // 模拟鼠标移动
+  expressApp.post('/api/browser/:id/human-move', async (req, res) => {
+    const { id } = req.params;
+    const { selector, minDelay, maxDelay } = req.body;
+    const result = await handleBrowserHumanMove(null, { id, selector, minDelay, maxDelay });
+    res.json(result);
+  });
+
+  // 按键盘按键
+  expressApp.post('/api/browser/:id/press-key', async (req, res) => {
+    const { id } = req.params;
+    const { key, minDelay, maxDelay } = req.body;
+    const result = await handleBrowserPressKey(null, { id, key, minDelay, maxDelay });
+    res.json(result);
+  });
+
   const server = http.createServer(expressApp);
   server.listen(3847, () => {
     console.log('API Server started on port 3847');
@@ -724,6 +996,14 @@ app.whenReady().then(() => {
   ipcMain.handle('browser:setProxy', handleBrowserSetProxy);
   ipcMain.handle('browser:getViewport', handleBrowserGetViewport);
   ipcMain.handle('browser:select', handleBrowserSelect);
+  
+  // 反爬虫 - 人类模拟功能
+  ipcMain.handle('browser:humanType', handleBrowserHumanType);
+  ipcMain.handle('browser:humanClick', handleBrowserHumanClick);
+  ipcMain.handle('browser:humanScroll', handleBrowserHumanScroll);
+  ipcMain.handle('browser:randomWait', handleBrowserRandomWait);
+  ipcMain.handle('browser:humanMove', handleBrowserHumanMove);
+  ipcMain.handle('browser:pressKey', handleBrowserPressKey);
 
   // 启动 API 服务器
   apiServer = startApiServer();
