@@ -1,0 +1,14 @@
+{
+  "name": "openclaw-browser-puppeteer",
+  "version": "1.0.0",
+  "description": "OpenClaw Browser using Puppeteer (system Chrome)",
+  "main": "src/main/index.js",
+  "scripts": {
+    "start": "node src/main/index.js"
+  },
+  "dependencies": {
+    "puppeteer-core": "^23.0.0",
+    "express": "^4.21.0",
+    "uuid": "^10.0.0"
+  }
+}
