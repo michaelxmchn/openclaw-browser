@@ -91,9 +91,15 @@ const defaultBrowserOptions = {
   args: [
     '--no-sandbox',
     '--disable-setuid-sandbox',
-    '--disable-blink-features=AutomationControlled',
+    '--disable-blink-features=AutomationControlled',  // 隐藏自动化特征
     '--disable-web-security',
-    '--remote-debugging-port=9222'
+    '--disable-dev-shm-usage',  // 避免共享内存检测
+    '--disable-accelerated-2d-canvas',
+    '--disable-gpu',
+    '--window-size=1920,1080',
+    '--start-maximized',
+    '--remote-debugging-port=9222',
+    '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
   ]
 };
 
@@ -226,9 +232,65 @@ async function handleBrowserCreate(event, options = {}) {
     const browser = await launch(browserOptions);
     const page = await browser.newPage();
     
-    // 隐藏 webdriver
+    // 设置真实浏览器视口
+    await page.setViewport({ width: 1920, height: 1080 });
+    
+    // 隐藏 webdriver - 基础反检测
     await page.evaluateOnNewDocument(() => {
-      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      // 1. 隐藏 webdriver
+      Object.defineProperty(navigator, 'webdriver', { 
+        get: () => undefined,
+        configurable: true 
+      });
+      
+      // 2. 覆盖自动化相关变量
+      window.cdc_adoQpoasnfa76pfcZLmcfl_Array = undefined;
+      window.cdc_adoQpoasnfa76pfcZLmcfl_String = undefined;
+      window.cdc_adoQpoasnfa76pfcZLmcfl_Promise = undefined;
+      window.cdc_adoQpoasnfa76pfcZLmcfl_Proxy = undefined;
+      
+      // 3. 模拟正常的插件列表
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => [1, 2, 3, 4, 5],
+        configurable: true
+      });
+      
+      // 4. 模拟正常的语言列表
+      Object.defineProperty(navigator, 'languages', {
+        get: () => ['zh-CN', 'zh', 'en'],
+        configurable: true
+      });
+      
+      // 5. 模拟 chrome 对象
+      if (!window.chrome) {
+        window.chrome = { runtime: {} };
+      }
+      
+      // 6. 模拟 permissions
+      const originalQuery = window.navigator.permissions.query;
+      window.navigator.permissions.query = (parameters) => (
+        parameters.name === 'notifications' ?
+          Promise.resolve({ state: Notification.permission }) :
+          originalQuery(parameters)
+      );
+      
+      // 7. 修改 chrome runtime
+      Object.defineProperty(window.chrome.runtime, 'connect', {
+        get: () => undefined,
+        configurable: true
+      });
+      
+      // 8. 模拟常见 WebGL vendor
+      const getParameter = WebGLRenderingContext.prototype.getParameter;
+      WebGLRenderingContext.prototype.getParameter = function(parameter) {
+        if (parameter === 37445) {
+          return 'Intel Inc.';
+        }
+        if (parameter === 37446) {
+          return 'Intel Iris OpenGL Engine';
+        }
+        return getParameter.apply(this, arguments);
+      };
     });
 
     browserInstances.set(id, {
@@ -806,11 +868,14 @@ function startApiServer() {
                    !!document.querySelector('input[name="email"]') ||
                    !!document.querySelector('input[name="mail"]'),
           
-          // 检测登录按钮
-          hasLoginBtn: !!document.querySelector('button[type="submit"]') ||
-                       !!document.querySelector('button:contains("登录")') ||
-                       !!document.querySelector('button:contains("登")') ||
-                       !!document.querySelector('a:contains("登录")'),
+          // 检测登录按钮 - 使用 XPath 查找包含"登录"的按钮
+          hasLoginBtn: (() => {
+            const buttons = document.querySelectorAll('button, a');
+            for (const btn of buttons) {
+              if (btn.textContent.includes('登录') || btn.textContent.includes('登')) return true;
+            }
+            return !!document.querySelector('button[type="submit"]');
+          })(),
           
           // 检测需要人机验证
           hasHumanVerify: !!document.querySelector('.geetest_panel') ||
@@ -914,9 +979,12 @@ function startApiServer() {
       const sel = phoneSelector || 'input[name="phone"], input[name="mobile"], input[type="tel"]';
       await instance.page.type(sel, phone);
       
-      // 点击发送验证码按钮
-      const btnSel = sendBtnSelector || 'button:contains("获取验证码"), button:contains("发送"), button[type="submit"]';
-      await instance.page.click(btnSel).catch(() => {});
+      // 点击发送验证码按钮 - 使用更可靠的方式
+      await instance.page.evaluate(() => {
+        const buttons = Array.from(document.querySelectorAll('button, a'));
+        const btn = buttons.find(b => b.textContent.includes('验证码') || b.textContent.includes('发送'));
+        if (btn) btn.click();
+      });
       
       res.json({ success: true, message: 'Phone number entered, verification code sent' });
     } catch (err) {
@@ -938,9 +1006,12 @@ function startApiServer() {
       const sel = codeSelector || 'input[name="code"], input[name="captcha"], input[name="verify"]';
       await instance.page.type(sel, code);
       
-      // 点击登录按钮
-      const btnSel = submitSelector || 'button[type="submit"], button:contains("登录"), button:contains("确认")';
-      await instance.page.click(btnSel).catch(() => {});
+      // 点击登录按钮 - 使用更可靠的方式
+      await instance.page.evaluate(() => {
+        const buttons = Array.from(document.querySelectorAll('button, a'));
+        const btn = buttons.find(b => b.textContent.includes('登录') || b.textContent.includes('确认'));
+        if (btn) btn.click();
+      });
       
       res.json({ success: true, message: 'Verification code submitted' });
     } catch (err) {
@@ -962,9 +1033,12 @@ function startApiServer() {
       const sel = emailSelector || 'input[name="email"], input[type="email"], input[name="mail"]';
       await instance.page.type(sel, email);
       
-      // 点击发送验证码按钮
-      const btnSel = sendBtnSelector || 'button:contains("发送验证码"), button:contains("获取验证码"), button:contains("发送"), button[type="submit"]';
-      await instance.page.click(btnSel).catch(() => {});
+      // 点击发送验证码按钮 - 使用更可靠的方式
+      await instance.page.evaluate(() => {
+        const buttons = Array.from(document.querySelectorAll('button, a'));
+        const btn = buttons.find(b => b.textContent.includes('验证码') || b.textContent.includes('发送'));
+        if (btn) btn.click();
+      });
       
       res.json({ success: true, message: 'Email entered, verification code sent' });
     } catch (err) {
