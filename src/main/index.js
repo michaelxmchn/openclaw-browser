@@ -14,6 +14,104 @@ const browserInstances = new Map();
 // API 密钥管理
 const apiKeys = new Map();
 
+// ============ 重试机制 ============
+
+// 默认重试配置
+const defaultRetryConfig = {
+  maxRetries: 3,        // 最大重试次数
+  initialDelay: 500,    // 初始延迟（毫秒）
+  maxDelay: 5000,      // 最大延迟（毫秒）
+  backoffMultiplier: 2, // 指数退避倍数
+  retryableErrors: [
+    'net::ERR_CONNECTION_RESET',
+    'net::ERR_CONNECTION_TIMED_OUT',
+    'net::ERR_NAME_NOT_RESOLVED',
+    'ETIMEDOUT',
+    'ECONNRESET',
+    'timeout',
+    'Failed to fetch',
+    'Navigation error'
+  ]
+};
+
+// 检查错误是否可重试
+function isRetryableError(error, retryableErrors) {
+  if (!error) return false;
+  const errorStr = String(error).toLowerCase();
+  return retryableErrors.some(e => errorStr.includes(e.toLowerCase()));
+}
+
+// 通用重试函数
+async function withRetry(operation, config = {}) {
+  const {
+    maxRetries = defaultRetryConfig.maxRetries,
+    initialDelay = defaultRetryConfig.initialDelay,
+    maxDelay = defaultRetryConfig.maxDelay,
+    backoffMultiplier = defaultRetryConfig.backoffMultiplier,
+    retryableErrors = defaultRetryConfig.retryableErrors
+  } = config;
+
+  let lastError;
+  let delay = initialDelay;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const result = await operation();
+      
+      // 检查结果中是否有错误
+      if (result && result.success === false) {
+        const errorMsg = result.error || '';
+        if (isRetryableError(errorMsg, retryableErrors) && attempt < maxRetries) {
+          lastError = errorMsg;
+          console.log(`[Retry] Attempt ${attempt + 1} failed: ${errorMsg}, retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          delay = Math.min(delay * backoffMultiplier, maxDelay);
+          continue;
+        }
+      }
+      
+      return result;
+    } catch (err) {
+      lastError = err.message;
+      if (isRetryableError(err.message, retryableErrors) && attempt < maxRetries) {
+        console.log(`[Retry] Attempt ${attempt + 1} error: ${err.message}, retrying in ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        delay = Math.min(delay * backoffMultiplier, maxDelay);
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  return { success: false, error: `Max retries (${maxRetries}) exceeded: ${lastError}` };
+}
+
+// 带重试的导航
+async function navigateWithRetry(instance, url, retryConfig = {}) {
+  return withRetry(async () => {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Navigation timeout'));
+      }, 30000);
+
+      instance.window.webContents.once('did-finish-load', () => {
+        clearTimeout(timeout);
+        resolve({ success: true });
+      });
+      
+      instance.window.webContents.once('did-fail-load', (event, errorCode, errorDesc) => {
+        clearTimeout(timeout);
+        reject(new Error(errorDesc || `Error ${errorCode}`));
+      });
+
+      instance.window.loadURL(url).catch(err => {
+        clearTimeout(timeout);
+        reject(err);
+      });
+    });
+  }, retryConfig);
+}
+
 function createWindow(options = {}) {
   const win = new BrowserWindow({
     width: options.width || 1280,
@@ -906,7 +1004,55 @@ function startApiServer() {
 
   // 健康检查
   expressApp.get('/health', (req, res) => {
-    res.json({ status: 'ok', timestamp: Date.now(), instances: browserInstances.size });
+    res.json({ 
+      status: 'ok', 
+      timestamp: Date.now(), 
+      instances: browserInstances.size,
+      retry: {
+        defaultConfig: defaultRetryConfig
+      }
+    });
+  });
+
+  // 获取重试配置
+  expressApp.get('/api/retry/config', (req, res) => {
+    res.json({ success: true, config: defaultRetryConfig });
+  });
+
+  // 更新重试配置
+  expressApp.post('/api/retry/config', (req, res) => {
+    const { maxRetries, initialDelay, maxDelay, backoffMultiplier, retryableErrors } = req.body;
+    
+    if (maxRetries !== undefined) defaultRetryConfig.maxRetries = maxRetries;
+    if (initialDelay !== undefined) defaultRetryConfig.initialDelay = initialDelay;
+    if (maxDelay !== undefined) defaultRetryConfig.maxDelay = maxDelay;
+    if (backoffMultiplier !== undefined) defaultRetryConfig.backoffMultiplier = backoffMultiplier;
+    if (retryableErrors !== undefined) defaultRetryConfig.retryableErrors = retryableErrors;
+    
+    res.json({ success: true, config: defaultRetryConfig });
+  });
+
+  // 测试重试机制（模拟失败）
+  expressApp.post('/api/retry/test', async (req, res) => {
+    const { attempts = 3, failUntilAttempt = 2 } = req.body;
+    
+    let currentAttempt = 0;
+    
+    const result = await withRetry(async () => {
+      currentAttempt++;
+      console.log(`[Retry Test] Attempt ${currentAttempt}/${attempts}`);
+      
+      if (currentAttempt <= failUntilAttempt) {
+        throw new Error('net::ERR_CONNECTION_RESET');
+      }
+      
+      return { success: true, message: `Succeeded on attempt ${currentAttempt}` };
+    }, { maxRetries: attempts - 1 });
+    
+    res.json({ 
+      ...result, 
+      attempts: currentAttempt 
+    });
   });
 
   // API 信息
@@ -967,9 +1113,29 @@ function startApiServer() {
   // 导航
   expressApp.post('/api/browser/:id/navigate', async (req, res) => {
     const { id } = req.params;
-    const { url } = req.body;
-    const result = await handleBrowserNavigate(null, { id, url });
-    res.json(result);
+    const { url, retry } = req.body;
+    
+    if (retry) {
+      // 使用重试机制
+      const retryConfig = {
+        maxRetries: retry.maxRetries || 3,
+        initialDelay: retry.initialDelay || 500,
+        maxDelay: retry.maxDelay || 5000,
+        backoffMultiplier: retry.backoffMultiplier || 2
+      };
+      
+      const instance = browserInstances.get(id);
+      if (!instance) {
+        return res.json({ success: false, error: 'Browser instance not found' });
+      }
+      
+      console.log(`[Navigate with retry] URL: ${url}, retries: ${retryConfig.maxRetries}`);
+      const result = await navigateWithRetry(instance, url, retryConfig);
+      res.json(result);
+    } else {
+      const result = await handleBrowserNavigate(null, { id, url });
+      res.json(result);
+    }
   });
 
   // 获取页面内容
