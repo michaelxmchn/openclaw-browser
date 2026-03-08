@@ -248,6 +248,22 @@ async function handleBrowserCreate(event, options = {}) {
     // 设置真实浏览器视口
     await page.setViewport({ width: 1920, height: 1080 });
     
+    // 拦截并阻止风控脚本
+    await page.setRequestInterception(true);
+    page.on('request', (request) => {
+      const url = request.url();
+      // 阻止常见风控/检测脚本
+      if (url.includes('owl.js') || 
+          url.includes('H5guard') || 
+          url.includes('sankuai') && url.includes('log') ||
+          url.includes('logan') ||
+          url.includes('aptcha')) {
+        request.abort();
+      } else {
+        request.continue();
+      }
+    });
+    
     // 隐藏 webdriver - 基础反检测
     await page.evaluateOnNewDocument(() => {
       // 1. 隐藏 webdriver
@@ -367,6 +383,99 @@ async function handleBrowserCreate(event, options = {}) {
           configurable: true
         });
       }
+      
+      // 16. 模拟 Battery API
+      if (navigator.getBattery) {
+        navigator.getBattery = function() {
+          return Promise.resolve({
+            charging: true,
+            chargingTime: 0,
+            dischargingTime: Infinity,
+            level: 1,
+            addEventListener: function() {}
+          });
+        };
+      }
+      
+      // 17. 覆盖各种自动化检测函数
+      window.callPhantom = undefined;
+      window._phantom = undefined;
+      window.phantom = undefined;
+      window.spawneval = undefined;
+      window.domAutomation = undefined;
+      window.domAutomationController = undefined;
+      window.webdriver = undefined;
+      
+      // 18. 覆盖 CDP 检测函数
+      window.cdc_adoQpoasnfa76pfcZLmcfl_ = undefined;
+      window.$cdc_adoQpoasnfa76pfcZLmcfl_ = undefined;
+      window.$chrome_asyncCallBacks = undefined;
+      
+      // 19. AudioContext 指纹覆盖
+      const originalCreateOscillator = AudioContext.prototype.createOscillator;
+      const originalCreateAnalyser = AudioContext.prototype.createAnalyser;
+      AudioContext.prototype.createOscillator = function() {
+        return originalCreateOscillator.apply(this, arguments);
+      };
+      AudioContext.prototype.createAnalyser = function() {
+        return originalCreateAnalyser.apply(this, arguments);
+      };
+      
+      // 20. 覆盖 Notification.permission
+      if (window.Notification) {
+        Object.defineProperty(Notification, 'permission', {
+          get: () => 'default',
+          configurable: true
+        });
+      }
+      
+      // 21. 模拟 touch 事件支持
+      Object.defineProperty(navigator, 'maxTouchPoints', {
+        get: () => 1,
+        configurable: true
+      });
+      Object.defineProperty(navigator, 'touchSupport', {
+        get: () => true,
+        configurable: true
+      });
+      
+      // 22. 覆盖 indexedDB
+      window.indexedDB = window.indexedDB || {};
+      
+      // 23. 模拟 localStorage
+      try {
+        localStorage.setItem('test', 'test');
+        localStorage.removeItem('test');
+      } catch (e) {
+        // 如果失败，模拟一个可用的 localStorage
+      }
+      
+      // 24. 覆盖 console 方法检测
+      const originalConsole = console;
+      window.console = new Proxy(console, {
+        get: function(target, prop) {
+          if (prop === 'debug' || prop === 'info' || prop === 'warn' || prop === 'error') {
+            return function() {};
+          }
+          return target[prop];
+        }
+      });
+      
+      // 25. 覆盖 performance
+      if (window.performance) {
+        window.performance.navigation = window.performance.navigation || {};
+        window.performance.navigation.type = 0;
+      }
+      
+      // 26. 模拟 document.hidden
+      Object.defineProperty(document, 'hidden', {
+        get: () => false,
+        configurable: true
+      });
+      Object.defineProperty(document, 'visibilityState', {
+        get: () => 'visible',
+        configurable: true
+      });
     });
 
     browserInstances.set(id, {
@@ -390,7 +499,14 @@ async function handleBrowserNavigate(event, { id, url }) {
   }
   
   try {
+    // 随机延迟，模拟人类访问
+    await new Promise(r => setTimeout(r, Math.random() * 1000 + 500));
+    
     await instance.page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+    
+    // 等待页面稳定
+    await new Promise(r => setTimeout(r, Math.random() * 1500 + 1000));
+    
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
