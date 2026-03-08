@@ -651,6 +651,178 @@ function startApiServer() {
     res.json(result);
   });
 
+  // ============ 交互式登录功能 ============
+  
+  // 检测登录状态/验证码
+  expressApp.get('/api/browser/:id/login-check', async (req, res) => {
+    const instance = browserInstances.get(req.params.id);
+    if (!instance) {
+      return res.json({ success: false, error: 'Browser instance not found' });
+    }
+    
+    try {
+      const result = await instance.page.evaluate(() => {
+        const checks = {
+          // 检测登录表单
+          hasLoginForm: !!document.querySelector('form[action*="login"]') || 
+                       !!document.querySelector('input[name="phone"]') ||
+                       !!document.querySelector('input[name="mobile"]') ||
+                       !!document.querySelector('input[type="tel"]'),
+          
+          // 检测验证码输入框
+          hasCaptcha: !!document.querySelector('input[name="code"]') ||
+                     !!document.querySelector('input[name="captcha"]') ||
+                     !!document.querySelector('input[name="verify"]') ||
+                     !!document.querySelector('input[placeholder*="验证码"]') ||
+                     !!document.querySelector('input[placeholder*="码"]'),
+          
+          // 检测手机号输入框
+          hasPhone: !!document.querySelector('input[name="phone"]') ||
+                    !!document.querySelector('input[name="mobile"]') ||
+                    !!document.querySelector('input[type="tel"]'),
+          
+          // 检测登录按钮
+          hasLoginBtn: !!document.querySelector('button[type="submit"]') ||
+                       !!document.querySelector('button:contains("登录")') ||
+                       !!document.querySelector('button:contains("登")') ||
+                       !!document.querySelector('a:contains("登录")'),
+          
+          // 检测需要人机验证
+          hasHumanVerify: !!document.querySelector('.geetest_panel') ||
+                         !!document.querySelector('#nc_1_n1z') ||
+                         !!document.querySelector('.tcaptcha'),
+          
+          // 检测滑块验证
+          hasSlider: !!document.querySelector('.slider') ||
+                    !!document.querySelector('.nc_wrapper') ||
+                    !!document.querySelector('[class*="slider"]'),
+          
+          // 检测二维码登录
+          hasQRCode: !!document.querySelector('img[src*="qrcode"]') ||
+                     !!document.querySelector('.qrcode') ||
+                     !!document.querySelector('[class*="qr"]'),
+          
+          // 获取页面标题
+          pageTitle: document.title,
+          
+          // 获取当前 URL
+          pageUrl: window.location.href
+        };
+        return checks;
+      });
+      
+      res.json({ success: true, ...result });
+    } catch (err) {
+      res.json({ success: false, error: err.message });
+    }
+  });
+
+  // 保存登录状态（Cookie）
+  expressApp.post('/api/browser/:id/login-save', async (req, res) => {
+    const instance = browserInstances.get(req.params.id);
+    if (!instance) {
+      return res.json({ success: false, error: 'Browser instance not found' });
+    }
+    
+    try {
+      const cookies = await instance.page.cookies();
+      const localStorage = await instance.page.evaluate(() => JSON.stringify(localStorage));
+      
+      // 保存到文件
+      const savePath = req.body.path || `./login_state_${req.params.id}.json`;
+      const loginState = {
+        cookies,
+        localStorage: JSON.parse(localStorage),
+        url: instance.page.url(),
+        savedAt: Date.now()
+      };
+      
+      fs.writeFileSync(savePath, JSON.stringify(loginState, null, 2));
+      
+      res.json({ success: true, path: savePath, cookieCount: cookies.length });
+    } catch (err) {
+      res.json({ success: false, error: err.message });
+    }
+  });
+
+  // 加载登录状态
+  expressApp.post('/api/browser/:id/login-load', async (req, res) => {
+    const instance = browserInstances.get(req.params.id);
+    if (!instance) {
+      return res.json({ success: false, error: 'Browser instance not found' });
+    }
+    
+    try {
+      const loadPath = req.body.path || `./login_state_${req.params.id}.json`;
+      
+      if (!fs.existsSync(loadPath)) {
+        return res.json({ success: false, error: 'Login state file not found' });
+      }
+      
+      const loginState = JSON.parse(fs.readFileSync(loadPath, 'utf-8'));
+      
+      // 设置 Cookie
+      await instance.page.setCookie(...loginState.cookies);
+      
+      // 跳转回保存时的 URL（如果需要）
+      if (req.body.navigateBack && loginState.url) {
+        await instance.page.goto(loginState.url);
+      }
+      
+      res.json({ success: true, cookieCount: loginState.cookies.length });
+    } catch (err) {
+      res.json({ success: false, error: err.message });
+    }
+  });
+
+  // 输入手机号并点击获取验证码
+  expressApp.post('/api/browser/:id/login-phone', async (req, res) => {
+    const instance = browserInstances.get(req.params.id);
+    if (!instance) {
+      return res.json({ success: false, error: 'Browser instance not found' });
+    }
+    
+    const { phone, phoneSelector, sendBtnSelector } = req.body;
+    
+    try {
+      // 查找手机号输入框
+      const sel = phoneSelector || 'input[name="phone"], input[name="mobile"], input[type="tel"]';
+      await instance.page.type(sel, phone);
+      
+      // 点击发送验证码按钮
+      const btnSel = sendBtnSelector || 'button:contains("获取验证码"), button:contains("发送"), button[type="submit"]';
+      await instance.page.click(btnSel).catch(() => {});
+      
+      res.json({ success: true, message: 'Phone number entered, verification code sent' });
+    } catch (err) {
+      res.json({ success: false, error: err.message });
+    }
+  });
+
+  // 输入验证码并登录
+  expressApp.post('/api/browser/:id/login-verify', async (req, res) => {
+    const instance = browserInstances.get(req.params.id);
+    if (!instance) {
+      return res.json({ success: false, error: 'Browser instance not found' });
+    }
+    
+    const { code, codeSelector, submitSelector } = req.body;
+    
+    try {
+      // 输入验证码
+      const sel = codeSelector || 'input[name="code"], input[name="captcha"], input[name="verify"]';
+      await instance.page.type(sel, code);
+      
+      // 点击登录按钮
+      const btnSel = submitSelector || 'button[type="submit"], button:contains("登录"), button:contains("确认")';
+      await instance.page.click(btnSel).catch(() => {});
+      
+      res.json({ success: true, message: 'Verification code submitted' });
+    } catch (err) {
+      res.json({ success: false, error: err.message });
+    }
+  });
+
   // 关闭实例
   expressApp.delete('/api/browser/:id', (req, res) => {
     const result = handleBrowserClose(null, { id: req.params.id });
