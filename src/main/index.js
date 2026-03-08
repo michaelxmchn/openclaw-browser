@@ -407,6 +407,212 @@ async function handleBrowserScreenshot(event, { id, path: savePath }) {
   }
 }
 
+// ============ 录屏功能 ============
+
+// 录屏状态管理
+const recordingSessions = new Map();
+
+// 开始录屏
+async function handleBrowserStartRecording(event, { id, format = 'webm', fps = 30 }) {
+  const instance = browserInstances.get(id);
+  if (!instance) {
+    return { success: false, error: 'Browser instance not found' };
+  }
+  
+  try {
+    const sessionId = id + '_' + Date.now();
+    
+    // 使用 desktopCapturer 获取屏幕流
+    const sources = await instance.window.webContents.desktopCapturer.getSources({
+      types: ['window', 'screen'],
+      thumbnailSize: { width: 1920, height: 1080 }
+    });
+    
+    // 选择第一个屏幕源
+    const source = sources.find(s => s.name === 'Entire Screen' || s.name.includes('Screen')) || sources[0];
+    
+    if (!source) {
+      return { success: false, error: 'No screen source found' };
+    }
+    
+    // 在渲染进程中创建 MediaRecorder
+    const result = await instance.window.webContents.executeJavaScript(`
+      (async () => {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            audio: false,
+            video: {
+              mandatory: {
+                chromeMediaSource: 'desktop',
+                chromeMediaSourceId: '${source.id}',
+                minWidth: 1280,
+                maxWidth: 1920,
+                minHeight: 720,
+                maxHeight: 1080,
+                minFrameRate: ${fps},
+                maxFrameRate: ${fps}
+              }
+            }
+          });
+          
+          const recorder = new MediaRecorder(stream, {
+            mimeType: 'video/webm;codecs=vp9'
+          });
+          
+          const chunks = [];
+          recorder.ondataavailable = e => chunks.push(e.data);
+          
+          return { success: true, streamId: '${source.id}' };
+        } catch (e) {
+          return { success: false, error: e.message };
+        }
+      })()
+    `);
+    
+    // 保存录制会话信息
+    recordingSessions.set(sessionId, {
+      id: sessionId,
+      browserId: id,
+      format,
+      fps,
+      started: Date.now(),
+      sourceId: source.id
+    });
+    
+    return { success: true, sessionId, sourceId: source.id };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+// 停止录屏
+async function handleBrowserStopRecording(event, { id, sessionId, outputPath }) {
+  const instance = browserInstances.get(id);
+  if (!instance) {
+    return { success: false, error: 'Browser instance not found' };
+  }
+  
+  try {
+    // 从渲染进程获取录制数据并保存
+    const result = await instance.window.webContents.executeJavaScript(`
+      (async () => {
+        try {
+          // 检查是否有正在进行的录制
+          if (!window._recorder || !window._recorder.state || window._recorder.state === 'inactive') {
+            return { success: false, error: 'No active recording' };
+          }
+          
+          // 停止录制
+          window._recorder.stop();
+          
+          // 等待数据可用
+          await new Promise(resolve => {
+            window._recorder.ondataavailable = resolve;
+          });
+          
+          // 获取所有数据块
+          const blob = new Blob(window._chunks, { type: 'video/webm' });
+          const arrayBuffer = await blob.arrayBuffer();
+          
+          return { 
+            success: true, 
+            size: blob.size,
+            hasData: window._chunks.length > 0
+          };
+        } catch (e) {
+          return { success: false, error: e.message };
+        }
+      })()
+    `);
+    
+    // 删除录制会话
+    if (sessionId) {
+      recordingSessions.delete(sessionId);
+    }
+    
+    return result;
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+// 获取录屏状态
+function handleBrowserRecordingStatus(event, { id }) {
+  const sessions = [];
+  for (const [sessionId, data] of recordingSessions) {
+    if (data.browserId === id) {
+      sessions.push({
+        sessionId,
+        format: data.format,
+        fps: data.fps,
+        duration: Date.now() - data.started,
+        sourceId: data.sourceId
+      });
+    }
+  }
+  return { success: true, sessions };
+}
+
+// 简单的屏幕录制 - 使用截图方式模拟
+async function handleBrowserRecordScreen(event, { id, duration = 10, interval = 100, outputPath }) {
+  const instance = browserInstances.get(id);
+  if (!instance) {
+    return { success: false, error: 'Browser instance not found' };
+  }
+  
+  try {
+    const frames = [];
+    const startTime = Date.now();
+    const endTime = startTime + (duration * 1000);
+    
+    // 截取多帧
+    while (Date.now() < endTime) {
+      let image = instance.window.webContents.capturePage();
+      // capturePage 可能返回 Promise
+      if (image && typeof image.then === 'function') {
+        image = await image;
+      }
+      if (image && !image.isEmpty()) {
+        frames.push(image);
+      }
+      await new Promise(resolve => setTimeout(resolve, interval));
+    }
+    
+    if (frames.length === 0) {
+      return { success: false, error: 'No frames captured' };
+    }
+    
+    // 如果指定了输出路径，保存为一系列图片
+    if (outputPath) {
+      const dir = outputPath.replace(/\.[^.]+$/, '');
+      const fs = require('fs');
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      frames.forEach((frame, i) => {
+        fs.writeFileSync(`${dir}/frame_${String(i).padStart(5, '0')}.png`, frame.toPNG());
+      });
+      return { 
+        success: true, 
+        frames: frames.length,
+        path: dir,
+        duration: Date.now() - startTime
+      };
+    }
+    
+    // 返回最后一帧作为预览（转换为 data URL）
+    const lastFrame = frames[frames.length - 1];
+    return { 
+      success: true, 
+      frames: frames.length,
+      preview: lastFrame.toDataURL(),
+      duration: Date.now() - startTime
+    };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
 function handleBrowserGetTitle(event, { id }) {
   const instance = browserInstances.get(id);
   if (!instance) {
@@ -960,6 +1166,39 @@ function startApiServer() {
     res.json(result);
   });
 
+  // ============ 录屏 API 端点 ============
+  
+  // 开始录屏
+  expressApp.post('/api/browser/:id/recording/start', async (req, res) => {
+    const { id } = req.params;
+    const { format, fps } = req.body;
+    const result = await handleBrowserStartRecording(null, { id, format, fps });
+    res.json(result);
+  });
+
+  // 停止录屏
+  expressApp.post('/api/browser/:id/recording/stop', async (req, res) => {
+    const { id } = req.params;
+    const { sessionId, outputPath } = req.body;
+    const result = await handleBrowserStopRecording(null, { id, sessionId, outputPath });
+    res.json(result);
+  });
+
+  // 录屏状态
+  expressApp.get('/api/browser/:id/recording/status', (req, res) => {
+    const { id } = req.params;
+    const result = handleBrowserRecordingStatus(null, { id });
+    res.json(result);
+  });
+
+  // 屏幕录制（帧捕获方式）
+  expressApp.post('/api/browser/:id/record-screen', async (req, res) => {
+    const { id } = req.params;
+    const { duration, interval, outputPath } = req.body;
+    const result = await handleBrowserRecordScreen(null, { id, duration, interval, outputPath });
+    res.json(result);
+  });
+
   const server = http.createServer(expressApp);
   server.listen(3847, () => {
     console.log('API Server started on port 3847');
@@ -1004,6 +1243,12 @@ app.whenReady().then(() => {
   ipcMain.handle('browser:randomWait', handleBrowserRandomWait);
   ipcMain.handle('browser:humanMove', handleBrowserHumanMove);
   ipcMain.handle('browser:pressKey', handleBrowserPressKey);
+
+  // 录屏功能
+  ipcMain.handle('browser:startRecording', handleBrowserStartRecording);
+  ipcMain.handle('browser:stopRecording', handleBrowserStopRecording);
+  ipcMain.handle('browser:recordingStatus', handleBrowserRecordingStatus);
+  ipcMain.handle('browser:recordScreen', handleBrowserRecordScreen);
 
   // 启动 API 服务器
   apiServer = startApiServer();
