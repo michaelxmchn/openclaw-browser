@@ -1,0 +1,26 @@
+{
+  "name": "openclaw-browser",
+  "version": "1.0.0",
+  "description": "专为 OpenClaw 设计的浏览器，替代浏览器扩展，实现全平台自动化",
+  "main": "src/main/index.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --enable-logging",
+    "test": "node tests/test-integration.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/michaelxmchn/openclaw-browser.git"
+  },
+  "keywords": ["openclaw", "browser", "automation", "electron"],
+  "author": "Michael Chen",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^33.0.0"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "ws": "^8.18.0",
+    "uuid": "^10.0.0"
+  }
+}
