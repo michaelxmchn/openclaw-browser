@@ -99,7 +99,20 @@ const defaultBrowserOptions = {
     '--window-size=1920,1080',
     '--start-maximized',
     '--remote-debugging-port=9222',
-    '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    '--disable-background-timer-throttling',  // 禁用后台计时器节流
+    '--disable-backgrounding-occluded-windows',
+    '--disable-renderer-backgrounding',
+    '--disable-features=TranslateUI',
+    '--disable-ipc-flooding-protection',
+    '--disable-hang-monitor',
+    '--disable-prompt-on-repost',
+    '--disable-popup-blocking',
+    '--ignore-certificate-errors',
+    '--allow-running-insecure-content',
+    '--disable-single-click-autofill-association',
+    '--disable-autofill-keyboard-accessory-view',
+    '--disable-password-manager-reauthentication'
   ]
 };
 
@@ -291,6 +304,69 @@ async function handleBrowserCreate(event, options = {}) {
         }
         return getParameter.apply(this, arguments);
       };
+      
+      // 9. 模拟屏幕分辨率
+      Object.defineProperty(screen, 'availWidth', {
+        get: () => 1920,
+        configurable: true
+      });
+      Object.defineProperty(screen, 'availHeight', {
+        get: () => 1040,
+        configurable: true
+      });
+      Object.defineProperty(screen, 'width', {
+        get: () => 1920,
+        configurable: true
+      });
+      Object.defineProperty(screen, 'height', {
+        get: () => 1080,
+        configurable: true
+      });
+      
+      // 10. 模拟时区
+      Object.defineProperty(Intl, 'DateTimeFormat', {
+        get: () => function() {
+          return {
+            resolvedOptions: () => ({ timeZone: 'Asia/Shanghai' })
+          };
+        },
+        configurable: true
+      });
+      
+      // 11. Canvas 指纹随机化
+      const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
+      HTMLCanvasElement.prototype.toDataURL = function() {
+        return originalToDataURL.apply(this, arguments);
+      };
+      
+      // 12. 修改 Permissions API
+      if (window.navigator.permissions) {
+        window.navigator.permissions.query = window.navigator.permissions.query || function() {};
+      }
+      
+      // 13. 覆盖 hardwareConcurrency
+      Object.defineProperty(navigator, 'hardwareConcurrency', {
+        get: () => 8,
+        configurable: true
+      });
+      
+      // 14. 覆盖 deviceMemory
+      Object.defineProperty(navigator, 'deviceMemory', {
+        get: () => 8,
+        configurable: true
+      });
+      
+      // 15. 模拟 connection
+      if (navigator.connection) {
+        Object.defineProperty(navigator.connection, 'effectiveType', {
+          get: () => '4g',
+          configurable: true
+        });
+        Object.defineProperty(navigator.connection, 'downlink', {
+          get: () => 10,
+          configurable: true
+        });
+      }
     });
 
     browserInstances.set(id, {
@@ -356,6 +432,28 @@ async function handleBrowserClick(event, { id, selector }) {
   }
   
   try {
+    // 人类点击模拟：先移动到元素位置，带随机偏移
+    const element = await instance.page.$(selector);
+    if (element) {
+      const box = await element.boundingBox();
+      if (box) {
+        // 随机偏移，模拟人类鼠标不精确
+        const offsetX = (Math.random() - 0.5) * box.width * 0.3;
+        const offsetY = (Math.random() - 0.5) * box.height * 0.3;
+        
+        // 先移动到元素附近（带随机延迟）
+        await instance.page.mouse.move(
+          box.x + box.width / 2 + offsetX,
+          box.y + box.height / 2 + offsetY,
+          { steps: Math.floor(Math.random() * 10) + 5 }
+        );
+        
+        // 随机等待一段时间
+        await new Promise(r => setTimeout(r, Math.random() * 200 + 100));
+      }
+    }
+    
+    // 点击
     await instance.page.click(selector);
     return { success: true };
   } catch (err) {
@@ -370,7 +468,17 @@ async function handleBrowserFill(event, { id, selector, text }) {
   }
   
   try {
-    await instance.page.type(selector, text);
+    // 人类输入模拟：逐字符输入，带随机延迟
+    await instance.page.focus(selector);
+    await instance.page.evaluate((sel) => {
+      const el = document.querySelector(sel);
+      if (el) el.value = '';
+    }, selector);
+    
+    // 逐字符输入，模拟人类键盘
+    for (let i = 0; i < text.length; i++) {
+      await instance.page.type(selector, text[i], { delay: Math.random() * 100 + 50 });
+    }
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
