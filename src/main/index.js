@@ -25,6 +25,54 @@ const defaultBrowserOptions = {
   ]
 };
 
+// ============ 滑块轨迹生成（模拟人类） ============
+
+function generateHumanSlidePath(distance) {
+  const moves = [];
+  let currentX = 0;
+  let currentY = 0;
+  
+  // 人类滑动特点：
+  // 1. 开始时稍慢
+  // 2. 中间有加速和减速
+  // 3. 有轻微的上下波动
+  // 4. 最后可能过冲或退回
+  
+  const totalSteps = Math.floor(distance / 3) + Math.floor(Math.random() * 10);
+  let speed = 1 + Math.random() * 2; // 初始速度
+  
+  for (let i = 0; i < totalSteps; i++) {
+    const progress = i / totalSteps;
+    
+    // 速度曲线：慢-快-慢
+    if (progress < 0.1) {
+      speed = 1 + Math.random() * 2;
+    } else if (progress < 0.8) {
+      speed = 3 + Math.random() * 4;
+    } else {
+      speed = 1 + Math.random() * 2;
+    }
+    
+    currentX += speed;
+    // 轻微的Y轴波动
+    currentY += (Math.random() - 0.5) * 3;
+    
+    // 偶尔"卡住"一下（人类滑动特点）
+    const delay = (Math.random() > 0.95) ? 50 + Math.random() * 100 : Math.random() * 10;
+    
+    moves.push({ x: currentX, y: currentY, delay: Math.floor(delay) });
+    
+    if (currentX >= distance) break;
+  }
+  
+  // 过冲一点点再退回（人类特点）
+  const overshoot = Math.random() * 5;
+  moves.push({ x: distance + overshoot, y: currentY + (Math.random() - 0.5) * 2, delay: 50 });
+  moves.push({ x: distance, y: currentY, delay: 30 });
+  
+  return moves;
+}
+
 // ============ 重试机制 ============
 
 const defaultRetryConfig = {
@@ -847,6 +895,103 @@ function startApiServer() {
       await instance.page.click(btnSel).catch(() => {});
       
       res.json({ success: true, message: 'Email entered, verification code sent' });
+    } catch (err) {
+      res.json({ success: false, error: err.message });
+    }
+  });
+
+  // 自动解决滑块验证（模拟人类滑动）
+  expressApp.post('/api/browser/:id/slider-solve', async (req, res) => {
+    const instance = browserInstances.get(req.params.id);
+    if (!instance) {
+      return res.json({ success: false, error: 'Browser instance not found' });
+    }
+    
+    const { sliderSelector, trackSelector, distance } = req.body;
+    
+    try {
+      // 查找滑块元素
+      const sliderSel = sliderSelector || '.nc_wrapper .ncslider, .slider, [class*="slider"], #nc_1_n1z';
+      const trackSel = trackSelector || '.nc_iconfont.sliding';
+      
+      // 获取滑块元素
+      const slider = await instance.page.$(sliderSel);
+      if (!slider) {
+        return res.json({ success: false, error: 'Slider element not found' });
+      }
+      
+      // 获取滑块位置和尺寸
+      const sliderBox = await slider.boundingBox();
+      if (!sliderBox) {
+        return res.json({ success: false, error: 'Cannot get slider bounding box' });
+      }
+      
+      // 计算滑动距离（默认随机）
+      const slideDistance = distance || sliderBox.width * (0.8 + Math.random() * 0.2);
+      
+      // 生成人类化的滑动轨迹
+      const moves = generateHumanSlidePath(slideDistance);
+      
+      // 执行滑动
+      await instance.page.mouse.move(sliderBox.x + sliderBox.width / 2, sliderBox.y + sliderBox.height / 2);
+      for (const move of moves) {
+        await instance.page.mouse.move(
+          sliderBox.x + sliderBox.width / 2 + move.x,
+          sliderBox.y + sliderBox.height / 2 + move.y,
+          { steps: 1 }
+        );
+        await instance.page.waitForTimeout(move.delay);
+      }
+      
+      // 松开鼠标
+      await instance.page.mouse.up();
+      
+      // 等待验证结果
+      await instance.page.waitForTimeout(1000);
+      
+      res.json({ success: true, message: 'Slider solved', distance: slideDistance });
+    } catch (err) {
+      res.json({ success: false, error: err.message });
+    }
+  });
+
+  // 等待人类完成验证
+  expressApp.post('/api/browser/:id/wait-human', async (req, res) => {
+    const instance = browserInstances.get(req.params.id);
+    if (!instance) {
+      return res.json({ success: false, error: 'Browser instance not found' });
+    }
+    
+    const timeout = req.body.timeout || 120000; // 默认等待2分钟
+    
+    try {
+      // 截图当前状态
+      const screenshot = await instance.page.screenshot({ encoding: 'base64' });
+      
+      // 等待滑块消失或验证通过
+      const startTime = Date.now();
+      while (Date.now() - startTime < timeout) {
+        const isVerified = await instance.page.evaluate(() => {
+          // 检查滑块是否消失
+          const slider = document.querySelector('.nc_wrapper');
+          const geetest = document.querySelector('.geetest_panel');
+          const captcha = document.querySelector('.tcaptcha');
+          
+          // 检查是否验证成功（根据URL变化或出现成功提示）
+          const success = document.body.innerText.includes('验证成功') || 
+                         document.body.innerText.includes('通过') ||
+                         !slider || !geetest || !captcha;
+          return success;
+        });
+        
+        if (isVerified) {
+          return res.json({ success: true, message: 'Human verification completed' });
+        }
+        
+        await instance.page.waitForTimeout(2000);
+      }
+      
+      res.json({ success: false, error: 'Timeout waiting for human verification' });
     } catch (err) {
       res.json({ success: false, error: err.message });
     }
